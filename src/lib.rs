@@ -50,6 +50,8 @@ pub trait CloudApi {
         path: &str,
     ) -> impl Future<Output = String>;
     fn delete_cache_path(&self, profile_name: &str, path: &str) -> impl Future<Output = String>;
+    fn about(&self, profile_name: &str) -> impl Future<Output = String>;
+    fn list_available_providers(&self) -> impl Future<Output = String>;
 }
 
 pub struct Cloud {
@@ -189,6 +191,20 @@ impl CloudApi for Cloud {
             .executor(|| self.rclone.delete_cache_path(profile_name, path))
             .await
         {
+            Ok(res) => to_ok(StatusCode::OK, res),
+            Err(err) => err.into(),
+        }
+    }
+
+    async fn about(&self, profile_name: &str) -> String {
+        match self.rclone.about(profile_name).await {
+            Ok(res) => to_ok(StatusCode::OK, res),
+            Err(err) => err.into(),
+        }
+    }
+
+    async fn list_available_providers(&self) -> String {
+        match self.rclone.list_available_providers().await {
             Ok(res) => to_ok(StatusCode::OK, res),
             Err(err) => err.into(),
         }

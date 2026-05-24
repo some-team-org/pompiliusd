@@ -63,6 +63,9 @@ pub trait RcloneApi {
         profile_name: &str,
         path: &str,
     ) -> impl Future<Output = Result<String>>;
+
+    fn about(&self, profile_name: &str) -> impl Future<Output = Result<AboutResponse>>;
+    fn list_available_providers(&self) -> impl Future<Output = Result<Vec<String>>>;
 }
 
 pub struct Rclone {
@@ -570,5 +573,47 @@ impl RcloneApi for Rclone {
                 message: "Failed to evict from cache".into(),
             })
         }
+    }
+
+    async fn about(&self, profile_name: &str) -> Result<AboutResponse> {
+        let body = json!({
+            "fs": format!("{}:", profile_name),
+        });
+
+        let response = self
+            .client
+            .post(format!("{}operations/about", self.url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(CloudError::ReqwestError)?;
+
+        let data: AboutResponse =
+            response
+                .json()
+                .await
+                .map_err(|err| CloudError::RcloneError {
+                    status: StatusCode::IM_A_TEAPOT,
+                    message: err.to_string(),
+                })?;
+
+        Ok(data)
+    }
+
+    async fn list_available_providers(&self) -> Result<Vec<String>> {
+        let response = self
+            .client
+            .post(format!("{}config/providers", self.url))
+            .send()
+            .await
+            .map_err(CloudError::ReqwestError)?;
+
+        let data: ProvidersResponse =
+            response.json().await.map_err(|e| CloudError::RcloneError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("Failed to parse providers: {}", e),
+            })?;
+
+        Ok(data.providers.into_iter().map(|p| p.name).collect())
     }
 }

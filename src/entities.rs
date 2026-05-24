@@ -74,6 +74,15 @@ pub struct VfsStatsResponse {
     pub metadata: Option<VfsMetadata>,
 }
 
+#[derive(Deserialize, Debug, Serialize)]
+pub struct AboutResponse {
+    pub total: Option<i64>,
+    pub used: Option<i64>,
+    pub free: Option<i64>,
+    pub trashed: Option<i64>,
+    pub other: Option<i64>,
+}
+
 #[derive(Deserialize, Debug, Default)]
 pub struct CoreStatsResponse {
     pub transferring: Vec<Transferring>,
