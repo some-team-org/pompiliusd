@@ -4,10 +4,18 @@ use reqwest::{Client, StatusCode};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::AtomicU32;
+use std::time::Duration;
 use std::{collections::HashMap, future::Future, process::Stdio};
 use tokio::process::Command;
+use tokio::time::timeout;
 
 type Result<T> = std::result::Result<T, CloudError>;
+
+/// PID rclone процесса для остановки процесса создания профиля в случае зависания
+// NOTE: без ручного контроля игнорирование oauth-а может привести к вечному
+// зависанию rclone-а на 53682 порту
+static AUTH_PID: AtomicU32 = AtomicU32::new(0);
 
 pub trait RcloneApi {
     fn delete_cache_path(
