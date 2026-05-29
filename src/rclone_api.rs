@@ -106,19 +106,39 @@ impl Rclone {
         Ok(())
     }
 
+    /// Переопределяем url для oauth облачных хранилищ, что пользователь мог выбирать аккаунты
+    fn set_oauth_urls(&self, params: &mut HashMap<String, String>, domain: &str) {
+        // TODO: доопределить все остальные сервисы с oauth
+        let auth_url_override = match domain {
+            "drive" => Some("https://accounts.google.com/o/oauth2/auth?prompt=select_account"),
+            "dropbox" => Some(
+                "https://www.dropbox.com/oauth2/authorize?force_reauthentication=true&force_reapprove=true",
+            ),
+            _ => None,
+        };
+
+        //  NOTE: Если для этого домена есть оверрайд, добавляем его в параметры для остальных
+        //  rclone сам подставит дефолтный URL
+        if let Some(url) = auth_url_override {
+            params.insert("auth_url".to_string(), url.to_string());
+        }
+    }
+
     fn setup_create_config_args(
         &self,
         profile_name: &str,
         domain: &str,
         parameters: &str,
     ) -> Result<Vec<String>> {
-        let params = serde_json::from_str::<CreateParameters>(parameters)?.into_string_map();
+        let mut params = serde_json::from_str::<CreateParameters>(parameters)?.into_string_map();
         let mut args = vec![
             "config".to_string(),
             "create".to_string(),
             profile_name.to_string(),
             domain.to_string(),
         ];
+
+        self.set_oauth_urls(&mut params, domain);
 
         for (key, value) in params {
             args.push(key);
