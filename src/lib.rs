@@ -63,7 +63,8 @@ impl Cloud {
         let _ = TcpStream::connect("209.85.233.101:80").await?;
         Ok(())
     }
-    pub async fn executor<T, F, Fut>(&self, func: F) -> Result<T>
+
+    async fn executor<T, F, Fut>(&self, func: F) -> Result<T>
     where
         T: Serialize,
         F: FnOnce() -> Fut,
@@ -71,6 +72,13 @@ impl Cloud {
     {
         Cloud::check_internet_connection().await?;
         func().await
+    }
+
+    fn matcher<T: Serialize>(&self, result: Result<T>) -> String {
+        match result {
+            Ok(res) => to_ok(StatusCode::OK, res),
+            Err(err) => err.into(),
+        }
     }
 }
 
