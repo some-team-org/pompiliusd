@@ -236,8 +236,8 @@ impl RcloneApi for Rclone {
     /// Получение статуса файлов:
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - paths - TODO: уточнить какие именно пути до файлов в хранилище
+    /// - `profile_name` - название хранилища
+    /// - `paths` - относительные пути от корня хранилища до файлов
     async fn get_files_status(
         &self,
         profile_name: &str,
@@ -286,12 +286,9 @@ impl RcloneApi for Rclone {
     /// Создает профиль хранилища
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - domain - название типа хранилища (yandex, drive и тп)
-    /// - parameters - дополнительные параметры авторизации
-    ///
-    /// TODO: довольно много логики в одном методе, надо либо разбить на доп методы, либо добавить
-    /// комменты к важным блокам кода
+    /// - `profile_name` - название хранилища
+    /// - `domain` - название типа хранилища (yandex, drive и тп)
+    /// - `parameters` - дополнительные параметры авторизации
     async fn create_config(
         &self,
         profile_name: &str,
@@ -360,7 +357,7 @@ impl RcloneApi for Rclone {
     /// Удаляет профиль хранилища по названию
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
+    /// - `profile_name` - название хранилища
     async fn delete_profile(&self, profile_name: &str) -> Result<String> {
         let body = HashMap::from([("name", profile_name)]);
 
@@ -374,13 +371,14 @@ impl RcloneApi for Rclone {
         Ok(format!("Success: Profile {} deleted", profile_name))
     }
 
-    /// Создает ссылку на просмотр на файл/директорию из хранилища
+    /// Монтирует удаленное хранилище в локальную файловую систему.
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - path - полный путь, где нужно примонтировать хранилище
-    /// - cache_max_size - максимальный размер кэша на данный mount
-    /// - cache_max_age - максимальное время жизни кэша TODO: желательно пояснить на что оно влияет
+    /// - `profile_name` - название хранилища
+    /// - `path` - полный путь, где нужно примонтировать хранилище
+    /// - `cache_max_size` - максимальный размер кэша на данный mount
+    /// - `cache_max_age` - Время, которое файл хранится на диске после последнего
+    ///   чтения/записи до вытеснения из кэша VFS.
     async fn mount(
         &self,
         profile_name: &str,
@@ -450,8 +448,8 @@ impl RcloneApi for Rclone {
     /// Создает ссылку на просмотр на файл/директорию из хранилища
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - path - путь в хранилище  TODO: уточнить относительный или полный?
+    /// - `profile_name` - название хранилища
+    /// - `path` - относительный путь к файлу/директории внутри хранилища.
     async fn link(&self, profile_name: &str, path: &str) -> Result<String> {
         let body = HashMap::from([
             ("fs", profile_name.to_string() + ":"),
@@ -486,10 +484,10 @@ impl RcloneApi for Rclone {
         }
     }
 
-    /// Рекурсинво кэширует директорию с удаленного хранилища
+    /// Рекурсивно кэширует директорию с удаленного хранилища
     ///
     /// # Arguments
-    /// - path - полный путь до директории в хранилище
+    /// - `path` - полный путь до директории в хранилище
     async fn cache_directory(&self, path: &str) -> Result<String> {
         let mut file_paths = Vec::new();
 
@@ -517,8 +515,8 @@ impl RcloneApi for Rclone {
     /// Обновляет данные с удаленного хранилища
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - path - относительный путь в хранилище
+    /// - `profile_name` - название хранилища
+    /// - `path` - относительный путь в хранилище
     async fn refresh(&self, profile_name: &str, path: &str) -> Result<String> {
         let body = json!({
             "fs": format!("{}:", profile_name),
@@ -593,6 +591,7 @@ impl RcloneApi for Rclone {
         }
     }
 
+    /// Получает информацию о доступном и занятом месте в хранилище.
     async fn about(&self, profile_name: &str) -> Result<AboutResponse> {
         let body = json!({
             "fs": format!("{}:", profile_name),
@@ -606,18 +605,18 @@ impl RcloneApi for Rclone {
             .await
             .map_err(CloudError::ReqwestError)?;
 
-        let data: AboutResponse =
-            response
-                .json()
-                .await
-                .map_err(|err| CloudError::RcloneError {
-                    status: StatusCode::IM_A_TEAPOT,
-                    message: err.to_string(),
-                })?;
+        let data: AboutResponse = response
+            .json()
+            .await
+            .map_err(|err| CloudError::RcloneError {
+                status: StatusCode::IM_A_TEAPOT,
+                message: err.to_string(),
+            })?;
 
         Ok(data)
     }
 
+    /// Возвращает список всех поддерживаемых провайдеров rclone
     async fn list_available_providers(&self) -> Result<Vec<String>> {
         let response = self
             .client
