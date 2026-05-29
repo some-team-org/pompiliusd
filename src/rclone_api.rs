@@ -83,21 +83,16 @@ pub struct Rclone {
 
 impl Rclone {
     fn cleanup_auth_port() {
-        if let Ok(output) = std::process::Command::new("lsof")
-            .args(["-t", "-i:53682"])
-            .output()
+        let old_pid = AUTH_PID.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if old_pid != 0 {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(old_pid.to_string())
+                .status();
+            println!("DEBUG: Killed hanging auth process with PID {}", old_pid);
+        }
+    }
         {
-            let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-            if !pid_str.is_empty() {
-                for pid in pid_str.lines() {
-                    let _ = std::process::Command::new("kill")
-                        .arg("-9")
-                        .arg(pid)
-                        .status();
-                    println!("DEBUG: Killed hanging auth process with PID {}", pid);
-                }
-            }
         }
     }
 }
