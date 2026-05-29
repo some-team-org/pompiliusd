@@ -105,6 +105,36 @@ impl Rclone {
 
         Ok(())
     }
+
+    fn setup_create_config_args(
+        &self,
+        profile_name: &str,
+        domain: &str,
+        parameters: &str,
+    ) -> Result<Vec<String>> {
+        let params = serde_json::from_str::<CreateParameters>(parameters)?.into_string_map();
+        let mut args = vec![
+            "config".to_string(),
+            "create".to_string(),
+            profile_name.to_string(),
+            domain.to_string(),
+        ];
+
+        for (key, value) in params {
+            args.push(key);
+            args.push(value);
+        }
+
+        args.extend([
+            "config_is_local".to_string(),
+            "true".to_string(),
+            "config_login_port".to_string(),
+            "53682".to_string(),
+            "--non-interactive".to_string(),
+            "--quiet".to_string(),
+        ]);
+        Ok(args)
+    }
 }
 
 impl RcloneApi for Rclone {
