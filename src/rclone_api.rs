@@ -92,8 +92,18 @@ impl Rclone {
             println!("DEBUG: Killed hanging auth process with PID {}", old_pid);
         }
     }
+
+    async fn delete_exists_profile(&self, profile_name: &str) -> Result<()> {
+        let current_profiles = self.list_profiles().await?;
+        if current_profiles
+            .iter()
+            .any(|(name, _)| name == profile_name)
         {
+            println!("DEBUG: Deleting existing profile: {}", profile_name);
+            let _ = self.delete_profile(profile_name).await?;
         }
+
+        Ok(())
     }
 }
 
