@@ -244,7 +244,7 @@ impl RcloneApi for Rclone {
         paths: Vec<String>,
     ) -> Result<HashMap<String, String>> {
         let mut results = HashMap::new();
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = std::env::var("HOME").expect("HOME var should be init in every OS");
 
         let meta_base_path = std::path::Path::new(&home)
             .join(".cache/rclone/vfs")
