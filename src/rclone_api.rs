@@ -299,43 +299,13 @@ impl RcloneApi for Rclone {
         parameters: &str,
     ) -> Result<String> {
         Self::cleanup_auth_port();
-        let params = serde_json::from_str::<CreateParameters>(parameters)?.into_string_map();
+        self.delete_exists_profile(profile_name).await?;
 
-        let current_profiles = self.list_profiles().await.unwrap_or_default();
-        if current_profiles
-            .iter()
-            .any(|(name, _)| name == profile_name)
-        {
-            println!("DEBUG: Deleting existing profile: {}", profile_name);
-            let _ = self.delete_profile(profile_name).await;
-        }
-
-        // Base rclone arguments
-        let mut args = vec![
-            "config".to_string(),
-            "create".to_string(),
-            profile_name.to_string(),
-            domain.to_string(),
-        ];
-
-        // Add custom parameters
-        for (key, value) in params {
-            args.push(key);
-            args.push(value);
-        }
-
-        // Add rclone flags
-        args.extend([
-            "config_is_local".to_string(),
-            "true".to_string(),
-            "config_login_port".to_string(),
-            "53682".to_string(),
-            "--non-interactive".to_string(),
-            "--quiet".to_string(),
-        ]);
+        let args = self.setup_create_config_args(profile_name, domain, parameters)?;
 
         let mut child = Command::new("rclone")
             .args(&args)
+            .kill_on_drop(true)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -344,42 +314,47 @@ impl RcloneApi for Rclone {
                 message: format!("Failed to spawn rclone: {}", e),
             })?;
 
-        let timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
-        tokio::pin!(timeout);
+        // Записали PID текущей попытки авторизации
+        if let Some(pid) = child.id() {
+            AUTH_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
+        }
 
-        tokio::select! {
-            status = child.wait() => {
-                match status {
-                    Ok(s) if s.success() => {
-                        Ok(format!("Profile '{}' created successfully", profile_name))
-                    }
-                    Ok(s) => {
-                        println!("DEBUG: Rclone exited with error: {}", s);
-                        let _ = self.delete_profile(profile_name).await;
-                        Err(CloudError::RcloneError {
-                            status: StatusCode::BAD_REQUEST,
-                            message: format!("Rclone failed with status: {}", s),
-                        })
-                    }
-                    Err(e) => {
-                        Err(CloudError::RcloneError {
-                            status: StatusCode::INTERNAL_SERVER_ERROR,
-                            message: format!("Wait error: {}", e),
-                        })
-                    }
-                }
+        let result = match timeout(Duration::from_secs(600), child.wait()).await {
+            Ok(Ok(status)) if status.success() => {
+                Ok(format!("Profile '{}' created successfully", profile_name))
             }
-            _ = &mut timeout => {
+            Ok(Ok(status)) => {
+                println!("DEBUG: Rclone exited with error: {}", status);
+                let _ = self.delete_profile(profile_name).await?;
+                Err(CloudError::RcloneError {
+                    status: StatusCode::BAD_REQUEST,
+                    message: format!("Rclone failed with status: {}", status),
+                })
+            }
+            Ok(Err(e)) => Err(CloudError::RcloneError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("Wait error: {}", e),
+            }),
+            Err(_) => {
                 println!("DEBUG: Auth timeout reached for {}", profile_name);
-                let _ = child.kill().await;
-                let _ = self.delete_profile(profile_name).await;
-
+                let _ = self.delete_profile(profile_name).await?;
                 Err(CloudError::RcloneError {
                     status: StatusCode::GATEWAY_TIMEOUT,
                     message: "Authentication timed out".into(),
                 })
             }
+        };
+
+        if let Some(pid) = child.id() {
+            let _ = AUTH_PID.compare_exchange(
+                pid,
+                0,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
+
+        result
     }
 
     /// Удаляет профиль хранилища по названию
