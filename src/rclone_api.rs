@@ -4,10 +4,18 @@ use reqwest::{Client, StatusCode};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::AtomicU32;
+use std::time::Duration;
 use std::{collections::HashMap, future::Future, process::Stdio};
 use tokio::process::Command;
+use tokio::time::timeout;
 
 type Result<T> = std::result::Result<T, CloudError>;
+
+/// PID rclone процесса для остановки процесса создания профиля в случае зависания
+// NOTE: без ручного контроля игнорирование oauth-а может привести к вечному
+// зависанию rclone-а на 53682 порту
+static AUTH_PID: AtomicU32 = AtomicU32::new(0);
 
 pub trait RcloneApi {
     fn delete_cache_path(
@@ -75,22 +83,77 @@ pub struct Rclone {
 
 impl Rclone {
     fn cleanup_auth_port() {
-        if let Ok(output) = std::process::Command::new("lsof")
-            .args(["-t", "-i:53682"])
-            .output()
-        {
-            let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-            if !pid_str.is_empty() {
-                for pid in pid_str.lines() {
-                    let _ = std::process::Command::new("kill")
-                        .arg("-9")
-                        .arg(pid)
-                        .status();
-                    println!("DEBUG: Killed hanging auth process with PID {}", pid);
-                }
-            }
+        let old_pid = AUTH_PID.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if old_pid != 0 {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(old_pid.to_string())
+                .status();
+            println!("DEBUG: Killed hanging auth process with PID {}", old_pid);
         }
+    }
+
+    async fn delete_exists_profile(&self, profile_name: &str) -> Result<()> {
+        let current_profiles = self.list_profiles().await?;
+        if current_profiles
+            .iter()
+            .any(|(name, _)| name == profile_name)
+        {
+            println!("DEBUG: Deleting existing profile: {}", profile_name);
+            let _ = self.delete_profile(profile_name).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Переопределяем url для oauth облачных хранилищ, что пользователь мог выбирать аккаунты
+    fn set_oauth_urls(&self, params: &mut HashMap<String, String>, domain: &str) {
+        // TODO: доопределить все остальные сервисы с oauth
+        let auth_url_override = match domain {
+            "drive" => Some("https://accounts.google.com/o/oauth2/auth?prompt=select_account"),
+            "dropbox" => Some(
+                "https://www.dropbox.com/oauth2/authorize?force_reauthentication=true&force_reapprove=true",
+            ),
+            _ => None,
+        };
+
+        //  NOTE: Если для этого домена есть оверрайд, добавляем его в параметры для остальных
+        //  rclone сам подставит дефолтный URL
+        if let Some(url) = auth_url_override {
+            params.insert("auth_url".to_string(), url.to_string());
+        }
+    }
+
+    fn setup_create_config_args(
+        &self,
+        profile_name: &str,
+        domain: &str,
+        parameters: &str,
+    ) -> Result<Vec<String>> {
+        let mut params = serde_json::from_str::<CreateParameters>(parameters)?.into_string_map();
+        let mut args = vec![
+            "config".to_string(),
+            "create".to_string(),
+            profile_name.to_string(),
+            domain.to_string(),
+        ];
+
+        self.set_oauth_urls(&mut params, domain);
+
+        for (key, value) in params {
+            args.push(key);
+            args.push(value);
+        }
+
+        args.extend([
+            "config_is_local".to_string(),
+            "true".to_string(),
+            "config_login_port".to_string(),
+            "53682".to_string(),
+            "--non-interactive".to_string(),
+            "--quiet".to_string(),
+        ]);
+        Ok(args)
     }
 }
 
@@ -193,15 +256,15 @@ impl RcloneApi for Rclone {
     /// Получение статуса файлов:
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - paths - TODO: уточнить какие именно пути до файлов в хранилище
+    /// - `profile_name` - название хранилища
+    /// - `paths` - относительные пути от корня хранилища до файлов
     async fn get_files_status(
         &self,
         profile_name: &str,
         paths: Vec<String>,
     ) -> Result<HashMap<String, String>> {
         let mut results = HashMap::new();
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = std::env::var("HOME").expect("HOME var should be init in every OS");
 
         let meta_base_path = std::path::Path::new(&home)
             .join(".cache/rclone/vfs")
@@ -243,12 +306,9 @@ impl RcloneApi for Rclone {
     /// Создает профиль хранилища
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - domain - название типа хранилища (yandex, drive и тп)
-    /// - parameters - дополнительные параметры авторизации
-    ///
-    /// TODO: довольно много логики в одном методе, надо либо разбить на доп методы, либо добавить
-    /// комменты к важным блокам кода
+    /// - `profile_name` - название хранилища
+    /// - `domain` - название типа хранилища (yandex, drive и тп)
+    /// - `parameters` - дополнительные параметры авторизации
     async fn create_config(
         &self,
         profile_name: &str,
@@ -256,43 +316,13 @@ impl RcloneApi for Rclone {
         parameters: &str,
     ) -> Result<String> {
         Self::cleanup_auth_port();
-        let params = serde_json::from_str::<CreateParameters>(parameters)?.into_string_map();
+        self.delete_exists_profile(profile_name).await?;
 
-        let current_profiles = self.list_profiles().await.unwrap_or_default();
-        if current_profiles
-            .iter()
-            .any(|(name, _)| name == profile_name)
-        {
-            println!("DEBUG: Deleting existing profile: {}", profile_name);
-            let _ = self.delete_profile(profile_name).await;
-        }
-
-        // Base rclone arguments
-        let mut args = vec![
-            "config".to_string(),
-            "create".to_string(),
-            profile_name.to_string(),
-            domain.to_string(),
-        ];
-
-        // Add custom parameters
-        for (key, value) in params {
-            args.push(key);
-            args.push(value);
-        }
-
-        // Add rclone flags
-        args.extend([
-            "config_is_local".to_string(),
-            "true".to_string(),
-            "config_login_port".to_string(),
-            "53682".to_string(),
-            "--non-interactive".to_string(),
-            "--quiet".to_string(),
-        ]);
+        let args = self.setup_create_config_args(profile_name, domain, parameters)?;
 
         let mut child = Command::new("rclone")
             .args(&args)
+            .kill_on_drop(true)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -301,48 +331,53 @@ impl RcloneApi for Rclone {
                 message: format!("Failed to spawn rclone: {}", e),
             })?;
 
-        let timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
-        tokio::pin!(timeout);
+        // Записали PID текущей попытки авторизации
+        if let Some(pid) = child.id() {
+            AUTH_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
+        }
 
-        tokio::select! {
-            status = child.wait() => {
-                match status {
-                    Ok(s) if s.success() => {
-                        Ok(format!("Profile '{}' created successfully", profile_name))
-                    }
-                    Ok(s) => {
-                        println!("DEBUG: Rclone exited with error: {}", s);
-                        let _ = self.delete_profile(profile_name).await;
-                        Err(CloudError::RcloneError {
-                            status: StatusCode::BAD_REQUEST,
-                            message: format!("Rclone failed with status: {}", s),
-                        })
-                    }
-                    Err(e) => {
-                        Err(CloudError::RcloneError {
-                            status: StatusCode::INTERNAL_SERVER_ERROR,
-                            message: format!("Wait error: {}", e),
-                        })
-                    }
-                }
+        let result = match timeout(Duration::from_secs(600), child.wait()).await {
+            Ok(Ok(status)) if status.success() => {
+                Ok(format!("Profile '{}' created successfully", profile_name))
             }
-            _ = &mut timeout => {
+            Ok(Ok(status)) => {
+                println!("DEBUG: Rclone exited with error: {}", status);
+                let _ = self.delete_profile(profile_name).await?;
+                Err(CloudError::RcloneError {
+                    status: StatusCode::BAD_REQUEST,
+                    message: format!("Rclone failed with status: {}", status),
+                })
+            }
+            Ok(Err(e)) => Err(CloudError::RcloneError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("Wait error: {}", e),
+            }),
+            Err(_) => {
                 println!("DEBUG: Auth timeout reached for {}", profile_name);
-                let _ = child.kill().await;
-                let _ = self.delete_profile(profile_name).await;
-
+                let _ = self.delete_profile(profile_name).await?;
                 Err(CloudError::RcloneError {
                     status: StatusCode::GATEWAY_TIMEOUT,
                     message: "Authentication timed out".into(),
                 })
             }
+        };
+
+        if let Some(pid) = child.id() {
+            let _ = AUTH_PID.compare_exchange(
+                pid,
+                0,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
+
+        result
     }
 
     /// Удаляет профиль хранилища по названию
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
+    /// - `profile_name` - название хранилища
     async fn delete_profile(&self, profile_name: &str) -> Result<String> {
         let body = HashMap::from([("name", profile_name)]);
 
@@ -356,13 +391,14 @@ impl RcloneApi for Rclone {
         Ok(format!("Success: Profile {} deleted", profile_name))
     }
 
-    /// Создает ссылку на просмотр на файл/директорию из хранилища
+    /// Монтирует удаленное хранилище в локальную файловую систему.
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - path - полный путь, где нужно примонтировать хранилище
-    /// - cache_max_size - максимальный размер кэша на данный mount
-    /// - cache_max_age - максимальное время жизни кэша TODO: желательно пояснить на что оно влияет
+    /// - `profile_name` - название хранилища
+    /// - `path` - полный путь, где нужно примонтировать хранилище
+    /// - `cache_max_size` - максимальный размер кэша на данный mount
+    /// - `cache_max_age` - Время, которое файл хранится на диске после последнего
+    ///   чтения/записи до вытеснения из кэша VFS.
     async fn mount(
         &self,
         profile_name: &str,
@@ -432,8 +468,8 @@ impl RcloneApi for Rclone {
     /// Создает ссылку на просмотр на файл/директорию из хранилища
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - path - путь в хранилище  TODO: уточнить относительный или полный?
+    /// - `profile_name` - название хранилища
+    /// - `path` - относительный путь к файлу/директории внутри хранилища.
     async fn link(&self, profile_name: &str, path: &str) -> Result<String> {
         let body = HashMap::from([
             ("fs", profile_name.to_string() + ":"),
@@ -468,10 +504,10 @@ impl RcloneApi for Rclone {
         }
     }
 
-    /// Рекурсинво кэширует директорию с удаленного хранилища
+    /// Рекурсивно кэширует директорию с удаленного хранилища
     ///
     /// # Arguments
-    /// - path - полный путь до директории в хранилище
+    /// - `path` - полный путь до директории в хранилище
     async fn cache_directory(&self, path: &str) -> Result<String> {
         let mut file_paths = Vec::new();
 
@@ -499,8 +535,8 @@ impl RcloneApi for Rclone {
     /// Обновляет данные с удаленного хранилища
     ///
     /// # Arguments
-    /// - profile_name - название хранилища
-    /// - path - относительный путь в хранилище
+    /// - `profile_name` - название хранилища
+    /// - `path` - относительный путь в хранилище
     async fn refresh(&self, profile_name: &str, path: &str) -> Result<String> {
         let body = json!({
             "fs": format!("{}:", profile_name),
@@ -575,6 +611,7 @@ impl RcloneApi for Rclone {
         }
     }
 
+    /// Получает информацию о доступном и занятом месте в хранилище.
     async fn about(&self, profile_name: &str) -> Result<AboutResponse> {
         let body = json!({
             "fs": format!("{}:", profile_name),
@@ -588,18 +625,18 @@ impl RcloneApi for Rclone {
             .await
             .map_err(CloudError::ReqwestError)?;
 
-        let data: AboutResponse =
-            response
-                .json()
-                .await
-                .map_err(|err| CloudError::RcloneError {
-                    status: StatusCode::IM_A_TEAPOT,
-                    message: err.to_string(),
-                })?;
+        let data: AboutResponse = response
+            .json()
+            .await
+            .map_err(|err| CloudError::RcloneError {
+                status: StatusCode::IM_A_TEAPOT,
+                message: err.to_string(),
+            })?;
 
         Ok(data)
     }
 
+    /// Возвращает список всех поддерживаемых провайдеров rclone
     async fn list_available_providers(&self) -> Result<Vec<String>> {
         let response = self
             .client
