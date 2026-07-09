@@ -6,10 +6,8 @@ pub enum CloudError {
     Reqwest(String),
     Parse(String),
     // #[error("Rclone error: {0}")]
-    RcloneError(String),
-
-    ConvertError(String),
-
+    Rclone(String),
+    Convert(String),
     Io(String),
 }
 
