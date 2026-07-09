@@ -19,22 +19,27 @@ type Result<T> = std::result::Result<T, CloudError>;
 
 pub trait CloudApi {
     fn list_profiles(&self) -> impl Future<Output = Result<Vec<(String, String)>>>;
+
     fn get_provider_options(
         &self,
         provider_type: &str,
     ) -> impl Future<Output = Result<Vec<String>>>;
+
     fn get_files_status(
         &self,
         profile_name: &str,
         paths: Vec<String>,
     ) -> impl Future<Output = Result<HashMap<String, String>>>;
+
     fn create_profile(
         &self,
         profile_name: &str,
         domain: &str,
         parameters: &str,
     ) -> impl Future<Output = Result<String>>;
+
     fn delete_profile(&self, profile_name: &str) -> impl Future<Output = Result<String>>;
+
     fn mount(
         &self,
         profile_name: &str,
@@ -42,25 +47,33 @@ pub trait CloudApi {
         cache_max_size: &str,
         cache_max_age: &str,
     ) -> impl Future<Output = Result<String>>;
+
     fn link(&self, profile_name: &str, path: &str) -> impl Future<Output = Result<String>>;
+
     fn cache_directory(&self, path: &str) -> impl Future<Output = Result<String>>;
+
     fn refresh(&self, profile_name: &str, path: &str) -> impl Future<Output = Result<String>>;
+
     fn delete_cache_file(
         &self,
         profile_name: &str,
         path: &str,
     ) -> impl Future<Output = Result<String>>;
+
     fn delete_cache_directory(
         &self,
         profile_name: &str,
         path: &str,
     ) -> impl Future<Output = Result<String>>;
+
     fn delete_cache_path(
         &self,
         profile_name: &str,
         path: &str,
     ) -> impl Future<Output = Result<String>>;
+
     fn about(&self, profile_name: &str) -> impl Future<Output = Result<String>>;
+
     fn list_available_providers(&self) -> impl Future<Output = Result<Vec<String>>>;
 }
 

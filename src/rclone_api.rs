@@ -1,4 +1,5 @@
 use crate::cache::get_all_files;
+use crate::error::RcloneError;
 use crate::{entities::*, error::CloudError, setup_conf_dir};
 use reqwest::Client;
 use serde_json::json;
@@ -73,6 +74,7 @@ pub trait RcloneApi {
     ) -> impl Future<Output = Result<String>>;
 
     fn about(&self, profile_name: &str) -> impl Future<Output = Result<AboutResponse>>;
+
     fn list_available_providers(&self) -> impl Future<Output = Result<Vec<String>>>;
 }
 
@@ -195,9 +197,7 @@ impl RcloneApi for Rclone {
             .send()
             .await?;
 
-        let data: HashMap<String, RemoteConfig> = response.json().await.map_err(|err| {
-            CloudError::Rclone(format!("Failed to parse providers: {}", err))
-        })?;
+        let data: HashMap<String, RemoteConfig> = response.json().await?;
 
         Ok(data
             .into_iter()
@@ -212,17 +212,14 @@ impl RcloneApi for Rclone {
             .send()
             .await?;
 
-        let data: ProvidersResponse = response
-            .json()
-            .await
-            .map_err(|e| CloudError::Rclone(format!("Failed to parse providers: {}", e)))?;
+        let data: ProvidersResponse = response.json().await?;
 
         let provider = data
             .providers
             .into_iter()
             .find(|p| p.name == provider_type)
-            .ok_or_else(|| {
-                CloudError::Rclone(format!("Provider '{}' not found", provider_type))
+            .ok_or_else(|| -> CloudError {
+                RcloneError::ProviderNotFound(provider_type.to_string()).into()
             })?;
 
         // Filter required and non-default options
@@ -237,7 +234,8 @@ impl RcloneApi for Rclone {
                 json!({
                     "Name": opt.name,
                     "Help": opt.help
-                }).to_string()
+                })
+                .to_string()
             })
             .collect();
 
@@ -317,7 +315,7 @@ impl RcloneApi for Rclone {
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| CloudError::Rclone(format!("Failed to spawn rclone: {}", e)))?;
+            .map_err(|e| -> CloudError { RcloneError::ProcessSpawn(e).into() })?;
 
         // Записали PID текущей попытки авторизации
         if let Some(pid) = child.id() {
@@ -331,16 +329,13 @@ impl RcloneApi for Rclone {
             Ok(Ok(status)) => {
                 println!("DEBUG: Rclone exited with error: {}", status);
                 let _ = self.delete_profile(profile_name).await?;
-                Err(CloudError::Rclone(format!(
-                    "Rclone failed with status: {}",
-                    status
-                )))
+                Err(RcloneError::CreateConfigFailed.into())
             }
-            Ok(Err(e)) => Err(CloudError::Rclone(format!("Wait error: {}", e))),
+            Ok(Err(e)) => Err(RcloneError::ProcessWait(e).into()),
             Err(_) => {
                 println!("DEBUG: Auth timeout reached for {}", profile_name);
                 let _ = self.delete_profile(profile_name).await?;
-                Err(CloudError::Rclone("Authentication time out".into()))
+                Err(RcloneError::AuthTimeout.into())
             }
         };
 
@@ -433,7 +428,7 @@ impl RcloneApi for Rclone {
             setup_conf_dir::setup(profile_name, file_path)?;
             Ok(format!("Mounting {} started", profile_name))
         } else {
-            Err(CloudError::Rclone("Failed to mount".into()))
+            Err(RcloneError::MountFailed.into())
         }
     }
 
@@ -461,7 +456,7 @@ impl RcloneApi for Rclone {
 
         match res_json["url"].as_str() {
             Some(url) => Ok(url.to_string()),
-            None => Err(CloudError::Rclone("No link generated".to_string())),
+            None => Err(RcloneError::LinkNotGenerated.into()),
         }
     }
 
@@ -512,7 +507,7 @@ impl RcloneApi for Rclone {
         if response.status().is_success() {
             Ok(format!("Success: File {} cached", path))
         } else {
-            Err(CloudError::Rclone("Failed to cache file".into()))
+            Err(RcloneError::FailedCacheFile.into())
         }
     }
 
@@ -532,7 +527,7 @@ impl RcloneApi for Rclone {
         if response.status().is_success() {
             Ok(format!("Success: {} evicted from local cache", path))
         } else {
-            Err(CloudError::Rclone("Failed to evict from cache".into()))
+            Err(RcloneError::FailedEvictFromCache.into())
         }
     }
 
@@ -552,7 +547,7 @@ impl RcloneApi for Rclone {
         if response.status().is_success() {
             Ok(format!("Success: {} evicted from local cache", path))
         } else {
-            Err(CloudError::Rclone("Failed to evict from cache".into()))
+            Err(RcloneError::FailedEvictFromCache.into())
         }
     }
 
