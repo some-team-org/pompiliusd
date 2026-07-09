@@ -1,3 +1,4 @@
+use thiserror::Error;
 use zbus::DBusError;
 
 #[derive(DBusError, Debug)]
@@ -38,4 +39,34 @@ impl From<toml::ser::Error> for CloudError {
     fn from(err: toml::ser::Error) -> Self {
         CloudError::Parse(format!("Parse toml error: {}", err))
     }
+}
+
+#[derive(Error, Debug)]
+pub enum RcloneError {
+    #[error("Failed to spawn rclone process: {0}")]
+    ProcessSpawn(#[source] std::io::Error),
+
+    #[error("Error while waiting for rclone process: {0}")]
+    ProcessWait(#[source] std::io::Error),
+
+    #[error("Rclone authentication timed out")]
+    AuthTimeout,
+
+    #[error("Provider '{0}' not found in rclone configuration")]
+    ProviderNotFound(String),
+
+    #[error("Failed to cache file")]
+    FailedCacheFile,
+
+    #[error("Failed to evict from cache")]
+    FailedEvictFromCache,
+
+    #[error("Link didn't generate")]
+    LinkNotGenerated,
+
+    #[error("Mount failed")]
+    MountFailed,
+
+    #[error("Create config failed")]
+    CreateConfigFailed,
 }
