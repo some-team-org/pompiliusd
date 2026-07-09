@@ -4,22 +4,27 @@ use zbus::DBusError;
 #[derive(DBusError, Debug)]
 #[zbus(prefix = "org.zbus.pompiliusd.Error")]
 pub enum CloudError {
-    #[zbus(name="Reqwest")]
+    #[zbus(name = "Reqwest")]
     Reqwest(String),
-    #[zbus(name="Parse")]
+    #[zbus(name = "Parse")]
     Parse(String),
-    // #[error("Rclone error: {0}")]
-    #[zbus(name="Rclone")]
+    #[zbus(name = "Rclone")]
     Rclone(String),
-    #[zbus(name="Convert")]
+    #[zbus(name = "Convert")]
     Convert(String),
-    #[zbus(name="IO")]
+    #[zbus(name = "IO")]
     IO(String),
 }
 
 impl From<reqwest::Error> for CloudError {
     fn from(err: reqwest::Error) -> Self {
         CloudError::Reqwest(format!("Reqwest error: {}", err))
+    }
+}
+
+impl From<RcloneError> for CloudError {
+    fn from(err: RcloneError) -> Self {
+        CloudError::Rclone(format!("Rclone error: {}", err))
     }
 }
 
