@@ -1,57 +1,67 @@
-use reqwest::StatusCode;
+use std::collections::HashMap;
+
 use serde::Serialize;
 use tokio::net::TcpStream;
 use zbus::interface;
 
 use crate::{
     error::CloudError,
-    json_result::to_ok,
     rclone_api::{Rclone, RcloneApi},
 };
 
 pub mod cache;
 pub mod entities;
 pub mod error;
-pub mod json_result;
 pub mod rclone_api;
 pub mod setup_conf_dir;
 
 type Result<T> = std::result::Result<T, CloudError>;
 
 pub trait CloudApi {
-    fn list_profiles(&self) -> impl Future<Output = String>;
-    fn get_provider_options(&self, provider_type: &str) -> impl Future<Output = String>;
+    fn list_profiles(&self) -> impl Future<Output = Result<Vec<(String, String)>>>;
+    fn get_provider_options(
+        &self,
+        provider_type: &str,
+    ) -> impl Future<Output = Result<Vec<String>>>;
     fn get_files_status(
         &self,
         profile_name: &str,
         paths: Vec<String>,
-    ) -> impl Future<Output = String>;
+    ) -> impl Future<Output = Result<HashMap<String, String>>>;
     fn create_profile(
         &self,
         profile_name: &str,
         domain: &str,
         parameters: &str,
-    ) -> impl Future<Output = String>;
-    fn delete_profile(&self, profile_name: &str) -> impl Future<Output = String>;
+    ) -> impl Future<Output = Result<String>>;
+    fn delete_profile(&self, profile_name: &str) -> impl Future<Output = Result<String>>;
     fn mount(
         &self,
         profile_name: &str,
         file_path: &str,
         cache_max_size: &str,
         cache_max_age: &str,
-    ) -> impl Future<Output = String>;
-    fn link(&self, profile_name: &str, path: &str) -> impl Future<Output = String>;
-    fn cache_directory(&self, path: &str) -> impl Future<Output = String>;
-    fn refresh(&self, profile_name: &str, path: &str) -> impl Future<Output = String>;
-    fn delete_cache_file(&self, profile_name: &str, path: &str) -> impl Future<Output = String>;
+    ) -> impl Future<Output = Result<String>>;
+    fn link(&self, profile_name: &str, path: &str) -> impl Future<Output = Result<String>>;
+    fn cache_directory(&self, path: &str) -> impl Future<Output = Result<String>>;
+    fn refresh(&self, profile_name: &str, path: &str) -> impl Future<Output = Result<String>>;
+    fn delete_cache_file(
+        &self,
+        profile_name: &str,
+        path: &str,
+    ) -> impl Future<Output = Result<String>>;
     fn delete_cache_directory(
         &self,
         profile_name: &str,
         path: &str,
-    ) -> impl Future<Output = String>;
-    fn delete_cache_path(&self, profile_name: &str, path: &str) -> impl Future<Output = String>;
-    fn about(&self, profile_name: &str) -> impl Future<Output = String>;
-    fn list_available_providers(&self) -> impl Future<Output = String>;
+    ) -> impl Future<Output = Result<String>>;
+    fn delete_cache_path(
+        &self,
+        profile_name: &str,
+        path: &str,
+    ) -> impl Future<Output = Result<String>>;
+    fn about(&self, profile_name: &str) -> impl Future<Output = Result<String>>;
+    fn list_available_providers(&self) -> impl Future<Output = Result<Vec<String>>>;
 }
 
 pub struct Cloud {
@@ -73,47 +83,41 @@ impl Cloud {
         Cloud::check_internet_connection().await?;
         func().await
     }
-
-    fn matcher<T: Serialize>(&self, result: Result<T>) -> String {
-        match result {
-            Ok(res) => to_ok(StatusCode::OK, res),
-            Err(err) => err.into(),
-        }
-    }
 }
 
 #[interface(name = "org.zbus.pompiliusd")]
 impl CloudApi for Cloud {
-    async fn list_profiles(&self) -> String {
-        self.matcher(self.executor(|| self.rclone.list_profiles()).await)
+    async fn list_profiles(&self) -> Result<Vec<(String, String)>> {
+        self.executor(|| self.rclone.list_profiles()).await
     }
 
-    async fn get_provider_options(&self, provider_type: &str) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.get_provider_options(provider_type))
-                .await,
-        )
+    async fn get_provider_options(&self, provider_type: &str) -> Result<Vec<String>> {
+        self.executor(|| self.rclone.get_provider_options(provider_type))
+            .await
     }
 
-    async fn get_files_status(&self, profile_name: &str, paths: Vec<String>) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.get_files_status(profile_name, paths))
-                .await,
-        )
+    async fn get_files_status(
+        &self,
+        profile_name: &str,
+        paths: Vec<String>,
+    ) -> Result<HashMap<String, String>> {
+        self.executor(|| self.rclone.get_files_status(profile_name, paths))
+            .await
     }
 
-    async fn create_profile(&self, profile_name: &str, domain: &str, parameters: &str) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.create_config(profile_name, domain, parameters))
-                .await,
-        )
+    async fn create_profile(
+        &self,
+        profile_name: &str,
+        domain: &str,
+        parameters: &str,
+    ) -> Result<String> {
+        self.executor(|| self.rclone.create_config(profile_name, domain, parameters))
+            .await
     }
 
-    async fn delete_profile(&self, profile_name: &str) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.delete_profile(profile_name))
-                .await,
-        )
+    async fn delete_profile(&self, profile_name: &str) -> Result<String> {
+        self.executor(|| self.rclone.delete_profile(profile_name))
+            .await
     }
 
     async fn mount(
@@ -122,60 +126,50 @@ impl CloudApi for Cloud {
         file_path: &str,
         cache_max_size: &str,
         cache_max_age: &str,
-    ) -> String {
-        self.matcher(
-            self.executor(|| {
-                self.rclone
-                    .mount(profile_name, file_path, cache_max_size, cache_max_age)
-            })
-            .await,
-        )
+    ) -> Result<String> {
+        self.executor(|| {
+            self.rclone
+                .mount(profile_name, file_path, cache_max_size, cache_max_age)
+        })
+        .await
     }
 
-    async fn link(&self, profile_name: &str, path: &str) -> String {
-        self.matcher(self.executor(|| self.rclone.link(profile_name, path)).await)
+    async fn link(&self, profile_name: &str, path: &str) -> Result<String> {
+        self.executor(|| self.rclone.link(profile_name, path)).await
     }
 
-    async fn cache_directory(&self, path: &str) -> String {
-        self.matcher(self.executor(|| self.rclone.cache_directory(path)).await)
+    async fn cache_directory(&self, path: &str) -> Result<String> {
+        self.executor(|| self.rclone.cache_directory(path)).await
     }
 
-    async fn refresh(&self, profile_name: &str, path: &str) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.refresh(profile_name, path))
-                .await,
-        )
+    async fn refresh(&self, profile_name: &str, path: &str) -> Result<String> {
+        self.executor(|| self.rclone.refresh(profile_name, path))
+            .await
     }
 
-    async fn delete_cache_file(&self, profile_name: &str, path: &str) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.delete_cache_file(profile_name, path))
-                .await,
-        )
+    async fn delete_cache_file(&self, profile_name: &str, path: &str) -> Result<String> {
+        self.executor(|| self.rclone.delete_cache_file(profile_name, path))
+            .await
     }
 
-    async fn delete_cache_directory(&self, profile_name: &str, path: &str) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.delete_cache_directory(profile_name, path))
-                .await,
-        )
+    async fn delete_cache_directory(&self, profile_name: &str, path: &str) -> Result<String> {
+        self.executor(|| self.rclone.delete_cache_directory(profile_name, path))
+            .await
     }
 
-    async fn delete_cache_path(&self, profile_name: &str, path: &str) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.delete_cache_path(profile_name, path))
-                .await,
-        )
+    async fn delete_cache_path(&self, profile_name: &str, path: &str) -> Result<String> {
+        self.executor(|| self.rclone.delete_cache_path(profile_name, path))
+            .await
     }
 
-    async fn about(&self, profile_name: &str) -> String {
-        self.matcher(self.executor(|| self.rclone.about(profile_name)).await)
+    async fn about(&self, profile_name: &str) -> Result<String> {
+        let about_resp = self.executor(|| self.rclone.about(profile_name)).await?;
+        let res_in_json = serde_json::to_string(&about_resp)?;
+        Ok(res_in_json)
     }
 
-    async fn list_available_providers(&self) -> String {
-        self.matcher(
-            self.executor(|| self.rclone.list_available_providers())
-                .await,
-        )
+    async fn list_available_providers(&self) -> Result<Vec<String>> {
+        self.executor(|| self.rclone.list_available_providers())
+            .await
     }
 }
