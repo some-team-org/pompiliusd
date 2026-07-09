@@ -29,7 +29,7 @@ pub trait RcloneApi {
     fn get_provider_options(
         &self,
         provider_type: &str,
-    ) -> impl Future<Output = Result<Vec<serde_json::Value>>>;
+    ) -> impl Future<Output = Result<Vec<String>>>;
 
     fn get_files_status(
         &self,
@@ -205,7 +205,7 @@ impl RcloneApi for Rclone {
             .collect())
     }
 
-    async fn get_provider_options(&self, provider_type: &str) -> Result<Vec<serde_json::Value>> {
+    async fn get_provider_options(&self, provider_type: &str) -> Result<Vec<String>> {
         let response = self
             .client
             .post(format!("{}config/providers", self.url))
@@ -226,7 +226,7 @@ impl RcloneApi for Rclone {
             })?;
 
         // Filter required and non-default options
-        let filtered_options: Vec<serde_json::Value> = provider
+        let filtered_options: Vec<String> = provider
             .options
             .into_iter()
             .filter(|opt| {
@@ -237,7 +237,7 @@ impl RcloneApi for Rclone {
                 json!({
                     "Name": opt.name,
                     "Help": opt.help
-                })
+                }).to_string()
             })
             .collect();
 
@@ -340,7 +340,7 @@ impl RcloneApi for Rclone {
             Err(_) => {
                 println!("DEBUG: Auth timeout reached for {}", profile_name);
                 let _ = self.delete_profile(profile_name).await?;
-                Err(CloudError::RcloneError("Authentication timed out".into()))
+                Err(CloudError::RcloneError("Authentication time out".into()))
             }
         };
 
