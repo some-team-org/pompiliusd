@@ -1,49 +1,77 @@
-use reqwest::StatusCode;
 use thiserror::Error;
+use zbus::DBusError;
 
-use crate::json_result::to_err;
-
-#[derive(Error, Debug)]
+#[derive(DBusError, Debug)]
+#[zbus(prefix = "org.zbus.pompiliusd.Error")]
 pub enum CloudError {
-    #[error("Reqwest error: {0}")]
-    ReqwestError(#[from] reqwest::Error),
-
-    #[error("Serde json error: {0}")]
-    SerdeJsonError(#[from] serde_json::Error),
-
-    #[error("Rclone error: {message}")]
-    RcloneError { status: StatusCode, message: String },
-
-    #[error("Convert error: {message}")]
-    ConvertError { status: StatusCode, message: String },
-
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-
-    #[error("Toml error: {0}")]
-    TomlError(#[from] toml::ser::Error),
+    #[zbus(name = "Reqwest")]
+    Reqwest(String),
+    #[zbus(name = "Parse")]
+    Parse(String),
+    #[zbus(name = "Rclone")]
+    Rclone(String),
+    #[zbus(name = "Convert")]
+    Convert(String),
+    #[zbus(name = "IO")]
+    IO(String),
 }
 
-impl From<CloudError> for String {
-    fn from(value: CloudError) -> Self {
-        match value {
-            CloudError::ReqwestError(err) => {
-                to_err(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string())
-            }
-            CloudError::SerdeJsonError(err) => to_err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Системная ошибка (IO): {}", err),
-            ),
-            CloudError::RcloneError { status, message } => to_err(status, &message),
-            CloudError::ConvertError { status, message } => to_err(status, &message),
-            CloudError::TomlError(err) => to_err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Ошибка создания конфигурационного toml-а: {}", err),
-            ),
-            CloudError::IoError(err) => to_err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Системная ошибка (IO): {}", err),
-            ),
-        }
+impl From<reqwest::Error> for CloudError {
+    fn from(err: reqwest::Error) -> Self {
+        CloudError::Reqwest(format!("Reqwest error: {}", err))
     }
+}
+
+impl From<RcloneError> for CloudError {
+    fn from(err: RcloneError) -> Self {
+        CloudError::Rclone(format!("Rclone error: {}", err))
+    }
+}
+
+impl From<std::io::Error> for CloudError {
+    fn from(err: std::io::Error) -> Self {
+        CloudError::IO(format!("IO error: {}", err))
+    }
+}
+
+impl From<serde_json::Error> for CloudError {
+    fn from(err: serde_json::Error) -> Self {
+        CloudError::Parse(format!("Parse json error: {}", err))
+    }
+}
+
+impl From<toml::ser::Error> for CloudError {
+    fn from(err: toml::ser::Error) -> Self {
+        CloudError::Parse(format!("Parse toml error: {}", err))
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum RcloneError {
+    #[error("Failed to spawn rclone process: {0}")]
+    ProcessSpawn(#[source] std::io::Error),
+
+    #[error("Error while waiting for rclone process: {0}")]
+    ProcessWait(#[source] std::io::Error),
+
+    #[error("Rclone authentication timed out")]
+    AuthTimeout,
+
+    #[error("Provider '{0}' not found in rclone configuration")]
+    ProviderNotFound(String),
+
+    #[error("Failed to cache file")]
+    FailedCacheFile,
+
+    #[error("Failed to evict from cache")]
+    FailedEvictFromCache,
+
+    #[error("Link didn't generate")]
+    LinkNotGenerated,
+
+    #[error("Mount failed")]
+    MountFailed,
+
+    #[error("Create config failed")]
+    CreateConfigFailed,
 }

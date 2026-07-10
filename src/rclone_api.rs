@@ -1,6 +1,7 @@
 use crate::cache::get_all_files;
+use crate::error::RcloneError;
 use crate::{entities::*, error::CloudError, setup_conf_dir};
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -29,7 +30,7 @@ pub trait RcloneApi {
     fn get_provider_options(
         &self,
         provider_type: &str,
-    ) -> impl Future<Output = Result<Vec<serde_json::Value>>>;
+    ) -> impl Future<Output = Result<Vec<String>>>;
 
     fn get_files_status(
         &self,
@@ -73,7 +74,9 @@ pub trait RcloneApi {
     ) -> impl Future<Output = Result<String>>;
 
     fn about(&self, profile_name: &str) -> impl Future<Output = Result<AboutResponse>>;
+
     fn list_available_providers(&self) -> impl Future<Output = Result<Vec<String>>>;
+    fn is_busy(&self) -> impl Future<Output = Result<bool>>;
 }
 
 pub struct Rclone {
@@ -168,9 +171,9 @@ impl RcloneApi for Rclone {
 
         if full_path.exists() {
             if full_path.is_dir() {
-                fs::remove_dir_all(&full_path).map_err(CloudError::IoError)?;
+                fs::remove_dir_all(&full_path)?;
             } else {
-                fs::remove_file(&full_path).map_err(CloudError::IoError)?;
+                fs::remove_file(&full_path)?;
             }
 
             if full_path.is_dir() {
@@ -193,17 +196,9 @@ impl RcloneApi for Rclone {
             .client
             .post(format!("{}config/dump", self.url))
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
-        let data: HashMap<String, RemoteConfig> =
-            response
-                .json()
-                .await
-                .map_err(|err| CloudError::RcloneError {
-                    status: StatusCode::IM_A_TEAPOT,
-                    message: err.to_string(),
-                })?;
+        let data: HashMap<String, RemoteConfig> = response.json().await?;
 
         Ok(data
             .into_iter()
@@ -211,31 +206,25 @@ impl RcloneApi for Rclone {
             .collect())
     }
 
-    async fn get_provider_options(&self, provider_type: &str) -> Result<Vec<serde_json::Value>> {
+    async fn get_provider_options(&self, provider_type: &str) -> Result<Vec<String>> {
         let response = self
             .client
             .post(format!("{}config/providers", self.url))
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
-        let data: ProvidersResponse =
-            response.json().await.map_err(|e| CloudError::RcloneError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to parse providers: {}", e),
-            })?;
+        let data: ProvidersResponse = response.json().await?;
 
         let provider = data
             .providers
             .into_iter()
             .find(|p| p.name == provider_type)
-            .ok_or_else(|| CloudError::RcloneError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("Provider '{}' not found", provider_type),
+            .ok_or_else(|| -> CloudError {
+                RcloneError::ProviderNotFound(provider_type.to_string()).into()
             })?;
 
         // Filter required and non-default options
-        let filtered_options: Vec<serde_json::Value> = provider
+        let filtered_options: Vec<String> = provider
             .options
             .into_iter()
             .filter(|opt| {
@@ -247,6 +236,7 @@ impl RcloneApi for Rclone {
                     "Name": opt.name,
                     "Help": opt.help
                 })
+                .to_string()
             })
             .collect();
 
@@ -326,10 +316,7 @@ impl RcloneApi for Rclone {
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| CloudError::RcloneError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to spawn rclone: {}", e),
-            })?;
+            .map_err(|e| -> CloudError { RcloneError::ProcessSpawn(e).into() })?;
 
         // Записали PID текущей попытки авторизации
         if let Some(pid) = child.id() {
@@ -343,22 +330,13 @@ impl RcloneApi for Rclone {
             Ok(Ok(status)) => {
                 println!("DEBUG: Rclone exited with error: {}", status);
                 let _ = self.delete_profile(profile_name).await?;
-                Err(CloudError::RcloneError {
-                    status: StatusCode::BAD_REQUEST,
-                    message: format!("Rclone failed with status: {}", status),
-                })
+                Err(RcloneError::CreateConfigFailed.into())
             }
-            Ok(Err(e)) => Err(CloudError::RcloneError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Wait error: {}", e),
-            }),
+            Ok(Err(e)) => Err(RcloneError::ProcessWait(e).into()),
             Err(_) => {
                 println!("DEBUG: Auth timeout reached for {}", profile_name);
                 let _ = self.delete_profile(profile_name).await?;
-                Err(CloudError::RcloneError {
-                    status: StatusCode::GATEWAY_TIMEOUT,
-                    message: "Authentication timed out".into(),
-                })
+                Err(RcloneError::AuthTimeout.into())
             }
         };
 
@@ -385,8 +363,7 @@ impl RcloneApi for Rclone {
             .post(format!("{}config/delete", self.url))
             .json(&body)
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
         Ok(format!("Success: Profile {} deleted", profile_name))
     }
@@ -407,7 +384,7 @@ impl RcloneApi for Rclone {
         cache_max_age: &str,
     ) -> Result<String> {
         let mount_path = std::path::Path::new(file_path).join(profile_name);
-        std::fs::create_dir_all(&mount_path).map_err(CloudError::IoError)?;
+        std::fs::create_dir_all(&mount_path)?;
         let mount_path_str = mount_path.to_string_lossy().to_string();
 
         let cache_max_size = format!(
@@ -415,20 +392,15 @@ impl RcloneApi for Rclone {
             cache_max_size
                 .to_lowercase()
                 .parse::<u32>()
-                .map_err(|err| CloudError::ConvertError {
-                    status: StatusCode::UNPROCESSABLE_ENTITY,
-                    message: err.to_string(),
-                })?
+                .map_err(|err| CloudError::Convert(format!("Convert error: {}", err)))?
         );
 
         let cache_max_age = format!(
             "{}h",
-            cache_max_age.to_lowercase().parse::<u32>().map_err(|err| {
-                CloudError::ConvertError {
-                    status: StatusCode::UNPROCESSABLE_ENTITY,
-                    message: err.to_string(),
-                }
-            })?
+            cache_max_age
+                .to_lowercase()
+                .parse::<u32>()
+                .map_err(|err| CloudError::Convert(format!("Convert error: {}", err)))?
         );
 
         let body = json!({
@@ -451,17 +423,13 @@ impl RcloneApi for Rclone {
             .post(format!("{}mount/mount", self.url))
             .json(&body)
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
         if response.status().is_success() {
             setup_conf_dir::setup(profile_name, file_path)?;
             Ok(format!("Mounting {} started", profile_name))
         } else {
-            Err(CloudError::RcloneError {
-                status: StatusCode::NOT_FOUND,
-                message: "Failed to mount".into(),
-            })
+            Err(RcloneError::MountFailed.into())
         }
     }
 
@@ -481,26 +449,15 @@ impl RcloneApi for Rclone {
             .post(format!("{}operations/publiclink", self.url))
             .json(&body)
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
-        let res_json: serde_json::Value =
-            response
-                .json()
-                .await
-                .map_err(|err| CloudError::RcloneError {
-                    status: StatusCode::IM_A_TEAPOT,
-                    message: err.to_string(),
-                })?;
+        let res_json: serde_json::Value = response.json().await?;
 
         println!("Rclone link response: {:?}", res_json);
 
         match res_json["url"].as_str() {
             Some(url) => Ok(url.to_string()),
-            None => Err(CloudError::RcloneError {
-                status: StatusCode::NOT_FOUND,
-                message: "No link generated".to_string(),
-            }),
+            None => Err(RcloneError::LinkNotGenerated.into()),
         }
     }
 
@@ -523,11 +480,7 @@ impl RcloneApi for Rclone {
             .args(&file_paths)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| CloudError::RcloneError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to spawn rclone: {}", e),
-            })?;
+            .spawn()?;
 
         Ok("Cached".to_string())
     }
@@ -550,16 +503,12 @@ impl RcloneApi for Rclone {
             .post(format!("{}vfs/refresh", self.url))
             .json(&body)
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
         if response.status().is_success() {
             Ok(format!("Success: File {} cached", path))
         } else {
-            Err(CloudError::RcloneError {
-                status: StatusCode::CONFLICT,
-                message: "Failed to cache file".into(),
-            })
+            Err(RcloneError::FailedCacheFile.into())
         }
     }
 
@@ -574,16 +523,12 @@ impl RcloneApi for Rclone {
             .post(format!("{}vfs/forget", self.url))
             .json(&body)
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
         if response.status().is_success() {
             Ok(format!("Success: {} evicted from local cache", path))
         } else {
-            Err(CloudError::RcloneError {
-                status: StatusCode::CONFLICT,
-                message: "Failed to evict from cache".into(),
-            })
+            Err(RcloneError::FailedEvictFromCache.into())
         }
     }
 
@@ -598,16 +543,12 @@ impl RcloneApi for Rclone {
             .post(format!("{}vfs/forget", self.url))
             .json(&body)
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
         if response.status().is_success() {
             Ok(format!("Success: {} evicted from local cache", path))
         } else {
-            Err(CloudError::RcloneError {
-                status: StatusCode::CONFLICT,
-                message: "Failed to evict from cache".into(),
-            })
+            Err(RcloneError::FailedEvictFromCache.into())
         }
     }
 
@@ -622,16 +563,9 @@ impl RcloneApi for Rclone {
             .post(format!("{}operations/about", self.url))
             .json(&body)
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
-        let data: AboutResponse = response
-            .json()
-            .await
-            .map_err(|err| CloudError::RcloneError {
-                status: StatusCode::IM_A_TEAPOT,
-                message: err.to_string(),
-            })?;
+        let data: AboutResponse = response.json().await?;
 
         Ok(data)
     }
@@ -642,15 +576,29 @@ impl RcloneApi for Rclone {
             .client
             .post(format!("{}config/providers", self.url))
             .send()
-            .await
-            .map_err(CloudError::ReqwestError)?;
+            .await?;
 
-        let data: ProvidersResponse =
-            response.json().await.map_err(|e| CloudError::RcloneError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to parse providers: {}", e),
-            })?;
+        let data: ProvidersResponse = response.json().await?;
 
         Ok(data.providers.into_iter().map(|p| p.name).collect())
+    }
+
+    async fn is_busy(&self) -> Result<bool> {
+        let response = self
+            .client
+            .post(format!("{}core/transfers", self.url))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            let data: serde_json::Value = response.json().await?;
+            if let Some(transfers) = data.get("transfers").and_then(|t| t.as_array()) {
+                Ok(!transfers.is_empty())
+            } else {
+                Ok(false)
+            }
+        } else {
+            Ok(false)
+        }
     }
 }
