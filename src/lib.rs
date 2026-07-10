@@ -75,6 +75,8 @@ pub trait CloudApi {
     fn about(&self, profile_name: &str) -> impl Future<Output = Result<String>>;
 
     fn list_available_providers(&self) -> impl Future<Output = Result<Vec<String>>>;
+
+    fn is_busy(&self) -> impl Future<Output = Result<bool>>;
 }
 
 pub struct Cloud {
@@ -184,5 +186,9 @@ impl CloudApi for Cloud {
     async fn list_available_providers(&self) -> Result<Vec<String>> {
         self.executor(|| self.rclone.list_available_providers())
             .await
+    }
+
+    async fn is_busy(&self) -> Result<bool> {
+        self.executor(|| self.rclone.is_busy()).await
     }
 }
