@@ -76,6 +76,7 @@ pub trait RcloneApi {
     fn about(&self, profile_name: &str) -> impl Future<Output = Result<AboutResponse>>;
 
     fn list_available_providers(&self) -> impl Future<Output = Result<Vec<String>>>;
+    fn is_busy(&self) -> impl Future<Output = Result<bool>>;
 }
 
 pub struct Rclone {
@@ -580,5 +581,24 @@ impl RcloneApi for Rclone {
         let data: ProvidersResponse = response.json().await?;
 
         Ok(data.providers.into_iter().map(|p| p.name).collect())
+    }
+
+    async fn is_busy(&self) -> Result<bool> {
+        let response = self
+            .client
+            .post(format!("{}core/transfers", self.url))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            let data: serde_json::Value = response.json().await?;
+            if let Some(transfers) = data.get("transfers").and_then(|t| t.as_array()) {
+                Ok(!transfers.is_empty())
+            } else {
+                Ok(false)
+            }
+        } else {
+            Ok(false)
+        }
     }
 }
