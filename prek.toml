@@ -1,0 +1,46 @@
+default_stages = ["pre-commit"]
+default_install_hook_types = ["pre-commit", "pre-push"]
+
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
+
+[[repos.hooks]]
+id = "check-yaml"
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+entry = "cargo fmt --all"
+language = "system"
+types = ["rust"]
+pass_filenames = false
+
+[[repos.hooks]]
+id = "cargo-sort"
+name = "cargo sort"
+entry = "cargo sort --no-format --workspace"
+language = "system"
+files = "(^|/)Cargo\\.toml$"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy"
+entry = "cargo clippy"
+args = [
+  "--all-features",
+  "--all-targets",
+  "--manifest-path",
+  "Cargo.toml",
+  "--",
+  "-D",
+  "warnings",
+]
+language = "system"
+types = ["rust"]
+pass_filenames = false
+stages = ["pre-push"]
