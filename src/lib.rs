@@ -81,27 +81,14 @@ pub struct Cloud {
     pub rclone: Rclone,
 }
 
-impl Cloud {
-    async fn executor<T, F, Fut>(&self, func: F) -> Result<T>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<T>>,
-    {
-        // Reachability depends on the operation's remote: LAN and local backends
-        // can work without Internet access. Let the operation report its error.
-        func().await
-    }
-}
-
 #[interface(name = "org.zbus.pompiliusd")]
 impl CloudApi for Cloud {
     async fn list_profiles(&self) -> Result<Vec<(String, String)>> {
-        self.executor(|| self.rclone.list_profiles()).await
+        self.rclone.list_profiles().await
     }
 
     async fn get_provider_options(&self, provider_type: &str) -> Result<Vec<String>> {
-        self.executor(|| self.rclone.get_provider_options(provider_type))
-            .await
+        self.rclone.get_provider_options(provider_type).await
     }
 
     async fn get_files_status(
@@ -109,8 +96,7 @@ impl CloudApi for Cloud {
         profile_name: &str,
         paths: Vec<String>,
     ) -> Result<HashMap<String, String>> {
-        self.executor(|| self.rclone.get_files_status(profile_name, paths))
-            .await
+        self.rclone.get_files_status(profile_name, paths).await
     }
 
     async fn create_profile(
@@ -119,13 +105,13 @@ impl CloudApi for Cloud {
         domain: &str,
         parameters: &str,
     ) -> Result<String> {
-        self.executor(|| self.rclone.create_config(profile_name, domain, parameters))
+        self.rclone
+            .create_config(profile_name, domain, parameters)
             .await
     }
 
     async fn delete_profile(&self, profile_name: &str) -> Result<String> {
-        self.executor(|| self.rclone.delete_profile(profile_name))
-            .await
+        self.rclone.delete_profile(profile_name).await
     }
 
     async fn mount(
@@ -135,53 +121,46 @@ impl CloudApi for Cloud {
         cache_max_size: &str,
         cache_max_age: &str,
     ) -> Result<String> {
-        self.executor(|| {
-            self.rclone
-                .mount(profile_name, file_path, cache_max_size, cache_max_age)
-        })
-        .await
+        self.rclone
+            .mount(profile_name, file_path, cache_max_size, cache_max_age)
+            .await
     }
 
     async fn link(&self, profile_name: &str, path: &str) -> Result<String> {
-        self.executor(|| self.rclone.link(profile_name, path)).await
+        self.rclone.link(profile_name, path).await
     }
 
     async fn cache_directory(&self, path: &str) -> Result<String> {
-        self.executor(|| self.rclone.cache_directory(path)).await
+        self.rclone.cache_directory(path).await
     }
 
     async fn refresh(&self, profile_name: &str, path: &str) -> Result<String> {
-        self.executor(|| self.rclone.refresh(profile_name, path))
-            .await
+        self.rclone.refresh(profile_name, path).await
     }
 
     async fn delete_cache_file(&self, profile_name: &str, path: &str) -> Result<String> {
-        self.executor(|| self.rclone.delete_cache_file(profile_name, path))
-            .await
+        self.rclone.delete_cache_file(profile_name, path).await
     }
 
     async fn delete_cache_directory(&self, profile_name: &str, path: &str) -> Result<String> {
-        self.executor(|| self.rclone.delete_cache_directory(profile_name, path))
-            .await
+        self.rclone.delete_cache_directory(profile_name, path).await
     }
 
     async fn delete_cache_path(&self, profile_name: &str, path: &str) -> Result<String> {
-        self.executor(|| self.rclone.delete_cache_path(profile_name, path))
-            .await
+        self.rclone.delete_cache_path(profile_name, path).await
     }
 
     async fn about(&self, profile_name: &str) -> Result<String> {
-        let about_resp = self.executor(|| self.rclone.about(profile_name)).await?;
+        let about_resp = self.rclone.about(profile_name).await?;
         let res_in_json = serde_json::to_string(&about_resp)?;
         Ok(res_in_json)
     }
 
     async fn list_available_providers(&self) -> Result<Vec<String>> {
-        self.executor(|| self.rclone.list_available_providers())
-            .await
+        self.rclone.list_available_providers().await
     }
 
     async fn is_busy(&self) -> Result<bool> {
-        self.executor(|| self.rclone.is_busy()).await
+        self.rclone.is_busy().await
     }
 }

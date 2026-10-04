@@ -2,6 +2,7 @@ use crate::cache::get_all_files;
 use crate::error::RcloneError;
 use crate::{entities::*, error::CloudError, setup_conf_dir};
 use reqwest::Client;
+use serde::Deserialize;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -12,6 +13,19 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 type Result<T> = std::result::Result<T, CloudError>;
+
+#[derive(Deserialize)]
+struct ProviderOptionsResponse {
+    providers: Vec<ProviderOptions>,
+}
+
+#[derive(Deserialize)]
+struct ProviderOptions {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Options")]
+    options: Vec<serde_json::Value>,
+}
 
 /// PID rclone процесса для остановки процесса создания профиля в случае зависания
 // NOTE: без ручного контроля игнорирование oauth-а может привести к вечному
@@ -164,6 +178,11 @@ impl Rclone {
         self.set_oauth_urls(&mut params, domain);
 
         for (key, value) in params {
+            // Empty form entries should keep rclone's defaults, especially for
+            // numeric and boolean options that cannot be parsed from "".
+            if value.is_empty() {
+                continue;
+            }
             args.push(key);
             args.push(value);
         }
@@ -174,6 +193,8 @@ impl Rclone {
             "config_login_port".to_string(),
             "53682".to_string(),
             "--non-interactive".to_string(),
+            // Form passwords are plaintext, even if they look obscured.
+            "--obscure".to_string(),
             "--quiet".to_string(),
         ]);
         Ok(args)
@@ -229,7 +250,7 @@ impl RcloneApi for Rclone {
             .send_rc_request(self.client.post(format!("{}config/providers", self.url)))
             .await?;
 
-        let data: ProvidersResponse = response.json().await?;
+        let data: ProviderOptionsResponse = response.json().await?;
 
         let provider = data
             .providers
@@ -239,24 +260,11 @@ impl RcloneApi for Rclone {
                 RcloneError::ProviderNotFound(provider_type.to_string()).into()
             })?;
 
-        // Filter required and non-default options
-        let filtered_options: Vec<String> = provider
+        Ok(provider
             .options
             .into_iter()
-            .filter(|opt| {
-                !["token", "config_is_local", "config_login_port"].contains(&opt.name.as_str())
-                    && opt.required
-            })
-            .map(|opt| {
-                json!({
-                    "Name": opt.name,
-                    "Help": opt.help
-                })
-                .to_string()
-            })
-            .collect();
-
-        Ok(filtered_options)
+            .map(|option| option.to_string())
+            .collect())
     }
 
     /// Получение статуса файлов:
@@ -593,5 +601,48 @@ impl RcloneApi for Rclone {
         } else {
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Rclone;
+
+    #[test]
+    fn form_parameters_keep_defaults_and_plaintext_password() {
+        let rclone = Rclone {
+            client: reqwest::Client::new(),
+            url: String::new(),
+        };
+        let args = rclone
+            .setup_create_config_args(
+                "test",
+                "sftp",
+                r#"{"host":"127.0.0.1","user":"test","port":"2022","pass":"test","key_file":""}"#,
+            )
+            .unwrap();
+        for pair in [
+            ["host", "127.0.0.1"],
+            ["user", "test"],
+            ["port", "2022"],
+            ["pass", "test"],
+        ] {
+            assert!(args.windows(2).any(|args| args == pair));
+        }
+        assert!(!args.iter().any(|arg| arg == "key_file"));
+        assert!(args.iter().any(|arg| arg == "--obscure"));
+
+        let args = rclone
+            .setup_create_config_args(
+                "test",
+                "sftp",
+                r#"{"host":"127.0.0.1","user":"","port":"","pass":"","key_file":""}"#,
+            )
+            .unwrap();
+        assert!(
+            !args
+                .iter()
+                .any(|arg| ["user", "port", "pass", "key_file"].contains(&arg.as_str()))
+        );
     }
 }

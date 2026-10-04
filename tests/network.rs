@@ -86,6 +86,34 @@ async fn local_configuration_operations_reach_rc() {
 }
 
 #[tokio::test]
+async fn provider_options_preserve_all_fields_and_metadata() {
+    let expected = serde_json::json!([
+        {"Name": "host", "Help": "Host", "Required": true, "Type": "string"},
+        {"Name": "port", "Help": "Port", "Required": false, "Default": 22, "Type": "int"},
+        {"Name": "pass", "Help": "Password", "Required": false, "IsPassword": true},
+        {"Name": "key_use_agent", "Help": "Force agent", "Required": false, "Advanced": true},
+        {"Name": "token", "Help": "Token", "Required": false},
+        {"Name": "config_is_local", "Help": "Local config", "Required": false},
+        {"Name": "custom_option", "Help": "Future option", "Required": false, "FutureMetadata": 42}
+    ]);
+    // Selection must work for any provider, without special cases for SFTP.
+    for provider in ["sftp", "other"] {
+        let body = serde_json::json!({"providers": [
+            {"Name": "unselected", "Options": []},
+            {"Name": provider, "Options": expected}
+        ]});
+        let (cloud, server) = mock_rc("200 OK", &body.to_string(), "config/providers").await;
+        let options = cloud.get_provider_options(provider).await.unwrap();
+        let options: Vec<serde_json::Value> = options
+            .iter()
+            .map(|option| serde_json::from_str(option).unwrap())
+            .collect();
+        assert_eq!(serde_json::Value::from(options), expected);
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn remote_failure_preserves_rclone_reason() {
     let (cloud, server) = mock_rc(
         "500 Internal Server Error",
