@@ -85,6 +85,26 @@ pub struct Rclone {
 }
 
 impl Rclone {
+    async fn send_rc_request(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        let response = request.send().await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+
+        // RC failures include an `error` field. Preserve the remote's explanation
+        // without forwarding the entire response, which can contain input secrets.
+        let body = response.text().await?;
+        let detail = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| value.get("error")?.as_str().map(str::to_owned));
+        let message = match detail {
+            Some(detail) => format!("Rclone RC error ({status}): {detail}"),
+            None => format!("Rclone RC error ({status})"),
+        };
+        Err(CloudError::Rclone(message))
+    }
+
     fn cleanup_auth_port() {
         let old_pid = AUTH_PID.swap(0, std::sync::atomic::Ordering::Relaxed);
         if old_pid != 0 {
@@ -193,9 +213,7 @@ impl RcloneApi for Rclone {
 
     async fn list_profiles(&self) -> Result<Vec<(String, String)>> {
         let response = self
-            .client
-            .post(format!("{}config/dump", self.url))
-            .send()
+            .send_rc_request(self.client.post(format!("{}config/dump", self.url)))
             .await?;
 
         let data: HashMap<String, RemoteConfig> = response.json().await?;
@@ -208,9 +226,7 @@ impl RcloneApi for Rclone {
 
     async fn get_provider_options(&self, provider_type: &str) -> Result<Vec<String>> {
         let response = self
-            .client
-            .post(format!("{}config/providers", self.url))
-            .send()
+            .send_rc_request(self.client.post(format!("{}config/providers", self.url)))
             .await?;
 
         let data: ProvidersResponse = response.json().await?;
@@ -261,9 +277,7 @@ impl RcloneApi for Rclone {
             .join(profile_name);
 
         let core_stats_res = self
-            .client
-            .post(format!("{}core/stats", self.url))
-            .send()
+            .send_rc_request(self.client.post(format!("{}core/stats", self.url)))
             .await;
 
         let active_transfers: Vec<String> = if let Ok(resp) = core_stats_res {
@@ -359,11 +373,12 @@ impl RcloneApi for Rclone {
     async fn delete_profile(&self, profile_name: &str) -> Result<String> {
         let body = HashMap::from([("name", profile_name)]);
 
-        self.client
-            .post(format!("{}config/delete", self.url))
-            .json(&body)
-            .send()
-            .await?;
+        self.send_rc_request(
+            self.client
+                .post(format!("{}config/delete", self.url))
+                .json(&body),
+        )
+        .await?;
 
         Ok(format!("Success: Profile {} deleted", profile_name))
     }
@@ -418,19 +433,15 @@ impl RcloneApi for Rclone {
 
         println!("{body}");
 
-        let response = self
-            .client
-            .post(format!("{}mount/mount", self.url))
-            .json(&body)
-            .send()
-            .await?;
+        self.send_rc_request(
+            self.client
+                .post(format!("{}mount/mount", self.url))
+                .json(&body),
+        )
+        .await?;
 
-        if response.status().is_success() {
-            setup_conf_dir::setup(profile_name, file_path)?;
-            Ok(format!("Mounting {} started", profile_name))
-        } else {
-            Err(RcloneError::MountFailed.into())
-        }
+        setup_conf_dir::setup(profile_name, file_path)?;
+        Ok(format!("Mounting {} started", profile_name))
     }
 
     /// Создает ссылку на просмотр на файл/директорию из хранилища
@@ -445,10 +456,11 @@ impl RcloneApi for Rclone {
         ]);
 
         let response = self
-            .client
-            .post(format!("{}operations/publiclink", self.url))
-            .json(&body)
-            .send()
+            .send_rc_request(
+                self.client
+                    .post(format!("{}operations/publiclink", self.url))
+                    .json(&body),
+            )
             .await?;
 
         let res_json: serde_json::Value = response.json().await?;
@@ -498,18 +510,14 @@ impl RcloneApi for Rclone {
             "recursive": true,
         });
 
-        let response = self
-            .client
-            .post(format!("{}vfs/refresh", self.url))
-            .json(&body)
-            .send()
-            .await?;
+        self.send_rc_request(
+            self.client
+                .post(format!("{}vfs/refresh", self.url))
+                .json(&body),
+        )
+        .await?;
 
-        if response.status().is_success() {
-            Ok(format!("Success: File {} cached", path))
-        } else {
-            Err(RcloneError::FailedCacheFile.into())
-        }
+        Ok(format!("Success: File {} cached", path))
     }
 
     async fn delete_cache_file(&self, profile_name: &str, path: &str) -> Result<String> {
@@ -518,18 +526,14 @@ impl RcloneApi for Rclone {
             "file": path,
         });
 
-        let response = self
-            .client
-            .post(format!("{}vfs/forget", self.url))
-            .json(&body)
-            .send()
-            .await?;
+        self.send_rc_request(
+            self.client
+                .post(format!("{}vfs/forget", self.url))
+                .json(&body),
+        )
+        .await?;
 
-        if response.status().is_success() {
-            Ok(format!("Success: {} evicted from local cache", path))
-        } else {
-            Err(RcloneError::FailedEvictFromCache.into())
-        }
+        Ok(format!("Success: {} evicted from local cache", path))
     }
 
     async fn delete_cache_directory(&self, profile_name: &str, path: &str) -> Result<String> {
@@ -538,18 +542,14 @@ impl RcloneApi for Rclone {
             "dir": path,
         });
 
-        let response = self
-            .client
-            .post(format!("{}vfs/forget", self.url))
-            .json(&body)
-            .send()
-            .await?;
+        self.send_rc_request(
+            self.client
+                .post(format!("{}vfs/forget", self.url))
+                .json(&body),
+        )
+        .await?;
 
-        if response.status().is_success() {
-            Ok(format!("Success: {} evicted from local cache", path))
-        } else {
-            Err(RcloneError::FailedEvictFromCache.into())
-        }
+        Ok(format!("Success: {} evicted from local cache", path))
     }
 
     /// Получает информацию о доступном и занятом месте в хранилище.
@@ -559,10 +559,11 @@ impl RcloneApi for Rclone {
         });
 
         let response = self
-            .client
-            .post(format!("{}operations/about", self.url))
-            .json(&body)
-            .send()
+            .send_rc_request(
+                self.client
+                    .post(format!("{}operations/about", self.url))
+                    .json(&body),
+            )
             .await?;
 
         let data: AboutResponse = response.json().await?;
@@ -573,9 +574,7 @@ impl RcloneApi for Rclone {
     /// Возвращает список всех поддерживаемых провайдеров rclone
     async fn list_available_providers(&self) -> Result<Vec<String>> {
         let response = self
-            .client
-            .post(format!("{}config/providers", self.url))
-            .send()
+            .send_rc_request(self.client.post(format!("{}config/providers", self.url)))
             .await?;
 
         let data: ProvidersResponse = response.json().await?;
@@ -585,18 +584,12 @@ impl RcloneApi for Rclone {
 
     async fn is_busy(&self) -> Result<bool> {
         let response = self
-            .client
-            .post(format!("{}core/transfers", self.url))
-            .send()
+            .send_rc_request(self.client.post(format!("{}core/transfers", self.url)))
             .await?;
 
-        if response.status().is_success() {
-            let data: serde_json::Value = response.json().await?;
-            if let Some(transfers) = data.get("transfers").and_then(|t| t.as_array()) {
-                Ok(!transfers.is_empty())
-            } else {
-                Ok(false)
-            }
+        let data: serde_json::Value = response.json().await?;
+        if let Some(transfers) = data.get("transfers").and_then(|t| t.as_array()) {
+            Ok(!transfers.is_empty())
         } else {
             Ok(false)
         }

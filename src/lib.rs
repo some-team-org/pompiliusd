@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use serde::Serialize;
-use tokio::net::TcpStream;
 use zbus::interface;
 
 use crate::{
@@ -84,18 +82,13 @@ pub struct Cloud {
 }
 
 impl Cloud {
-    async fn check_internet_connection() -> Result<()> {
-        let _ = TcpStream::connect("209.85.233.101:80").await?;
-        Ok(())
-    }
-
     async fn executor<T, F, Fut>(&self, func: F) -> Result<T>
     where
-        T: Serialize,
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        Cloud::check_internet_connection().await?;
+        // Reachability depends on the operation's remote: LAN and local backends
+        // can work without Internet access. Let the operation report its error.
         func().await
     }
 }
